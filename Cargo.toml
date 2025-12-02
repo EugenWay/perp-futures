@@ -1,0 +1,7 @@
+[package]
+name = "perp-futures"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+primitive-types = "0.14.0"
