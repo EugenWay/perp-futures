@@ -49,7 +49,7 @@ pub struct Order {
     pub collateral_token: AssetId,
     pub side: Side,
     pub order_type: OrderType,
-
+    pub collateral_delta_tokens: TokenAmount,
     pub size_delta_usd: Usd,
     pub withdraw_collateral_amount: TokenAmount,
 

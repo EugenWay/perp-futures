@@ -91,7 +91,7 @@ impl FeesService for BasicFeesService {
             // effective_bps = pos_bps * (100 - rebate%) / 100
             pos_bps = pos_bps.saturating_mul(100 - self.helpful_rebate_percent) / 100;
         }
-
+        
         let position_fee_usd: Usd = (notional_usd as i128 * pos_bps as i128 / 10_000) as Usd;
 
         // 2) Liquidation fee only for liquidation orders.

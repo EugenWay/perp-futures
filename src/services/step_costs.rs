@@ -96,7 +96,6 @@ pub fn apply_step_costs_to_position(
     if total_tokens_cost > pos.collateral_amount {
         return Err("insufficient_collateral_for_step_costs".into());
     }
-
     pos.collateral_amount -= total_tokens_cost;
     Ok(())
 }

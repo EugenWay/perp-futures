@@ -96,7 +96,6 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
         order: &Order,
         prices: &OraclePrices,
     ) -> Result<(), String> {
-
         let key = PositionKey {
             account: order.account,
             market_id: order.market_id,
@@ -115,7 +114,7 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
                 key: k,
                 size_usd: 0,
                 size_tokens: 0,
-                collateral_amount: 0,
+                collateral_amount: order.collateral_delta_tokens,
                 pending_impact_tokens: 0,
                 funding_index: initial_funding_index,
                 borrowing_index: market.borrowing.cumulative_factor,
@@ -150,6 +149,7 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
             )
             .map_err(|e| format!("pricing_error: {:?}", e))?;
 
+        println!("EXEC {:?}", exec);
         // 6) Step costs: funding + borrowing + (position + liquidation) fees.
         //
         // balance_was_improved comes from the pricing step and indicates whether
@@ -309,12 +309,7 @@ mod tests {
         market.long_asset = long_asset;
         market.short_asset = short_asset;
 
-        let m_before1 = executor
-            .state
-            .markets
-            .get(&market_id)
-            .unwrap()
-            .clone();
+        let m_before1 = executor.state.markets.get(&market_id).unwrap().clone();
 
         // STEP 1: first short increase at t1
         // open short for 20k notional
@@ -324,20 +319,21 @@ mod tests {
             side: Side::Short,
             collateral_token,
             size_delta_usd: 20_000,
+            collateral_delta_tokens: 20_000,
             order_type: OrderType::Increase,
             withdraw_collateral_amount: 0,
             created_at: t1,
             valid_from: t1 - 30,
             valid_until: t1 + 300,
         };
-       
+
         let order1_id: OrderId = executor.submit_order(order1.clone());
-       
+
         executor
             .execute_order(t1, order1_id)
             .expect("first execute_order must succeed");
 
-        // Assertions after step 1 
+        // Assertions after step 1
 
         // Order must be removed
         assert!(
@@ -376,12 +372,9 @@ mod tests {
             m_after1.oi_long_usd, m_before1.oi_long_usd,
             "long OI must not change for short increase"
         );
-        assert_eq!(
-            m_after1.oi_short_usd,
-            m_before1.oi_short_usd + 20_000,
-        );
-        
-         // Funding / borrowing indices updated to t1.
+        assert_eq!(m_after1.oi_short_usd, m_before1.oi_short_usd + 20_000,);
+
+        // Funding / borrowing indices updated to t1.
         assert_eq!(
             m_after1.funding.last_updated_at, t1,
             "funding.last_updated_at must be updated to t1"
@@ -393,15 +386,15 @@ mod tests {
 
         // Position snapshots must match current funding / borrowing indices for its side.
         assert_eq!(
-            pos_after1.funding_index,
-            m_after1.funding.cumulative_index_short,
+            pos_after1.funding_index, m_after1.funding.cumulative_index_short,
             "short position funding_index must match market short index after step 1"
         );
         assert_eq!(
-            pos_after1.borrowing_index,
-            m_after1.borrowing.cumulative_factor,
+            pos_after1.borrowing_index, m_after1.borrowing.cumulative_factor,
             "position borrowing_index must match market borrowing factor after step 1"
         );
+
+        println!("pos_after1 {:?}", pos_after1.clone());
 
         assert!(
             pos_after1.collateral_amount > 0,

@@ -28,6 +28,7 @@ pub struct ExecutionPriceIncreaseParams<'a> {
     pub prices: OraclePrices,
 }
 
+#[derive(Debug, Clone)]
 pub struct ExecutionPriceIncreaseResult {
     pub price_impact_usd: Usd,
     pub price_impact_amount_tokens: TokenAmount,

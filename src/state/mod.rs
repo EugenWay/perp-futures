@@ -14,7 +14,7 @@ pub use position_store::*;
 
 use crate::types::*;
 use std::collections::HashMap;
-/// Главный контейнер состояния, как в твоём mermaid State/PS/MS/PB/CL.
+
 #[derive(Default)]
 pub struct State {
     pub positions: PositionStore,

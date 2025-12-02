@@ -59,13 +59,19 @@ pub struct BasicServicesBundle {
 
 impl Default for BasicServicesBundle {
     fn default() -> Self {
+        let fees = BasicFeesService::new(
+            10, // position_fee_bps_increase = 0.1%
+            10, // position_fee_bps_decrease = 0.1%
+            50, // liquidation_fee_bps = 0.5%
+            20, // helpful_rebate_percent = 20%
+        );
         Self {
             price_impact: price_impact::BasicPriceImpactService::default(),
             pricing: pricing::BasicPricingService::default(),
             impact_pool: impact_pool::BasicImpactPoolService::default(),
             funding: funding::BasicFundingService::default(),
             borrowing: borrowing::BasicBorrowingService::default(),
-            fees: fees::BasicFeesService::default(),
+            fees,
             margin: margin::BasicMarginService::default(),
             open_interest: open_interest::BasicOpenInterestService::default(),
         }

@@ -105,7 +105,10 @@ impl PoolBalances {
 
     /// Read current pool balance for (market, asset) without modifying it.
     pub fn get_balance(&self, market_id: MarketId, asset: AssetId) -> TokenAmount {
-        self.liquidity.get(&(market_id, asset)).cloned().unwrap_or(0)
+        self.liquidity
+            .get(&(market_id, asset))
+            .cloned()
+            .unwrap_or(0)
     }
 
     /// Get both sides of a 2-token pool for a given market.
@@ -120,7 +123,7 @@ impl PoolBalances {
         (long_bal, short_bal)
     }
 
-     pub fn get_fee_for_pool(&self, market_id: MarketId, asset: AssetId) -> TokenAmount {
+    pub fn get_fee_for_pool(&self, market_id: MarketId, asset: AssetId) -> TokenAmount {
         *self.fees.get(&(market_id, asset)).unwrap_or(&0)
     }
 }
