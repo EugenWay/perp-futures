@@ -29,6 +29,7 @@ pub trait FeesService {
         order: &Order,
         prices: &OraclePrices,
         balance_was_improved: bool,
+        size_delta_usd: Usd,
     ) -> StepFees;
 
     fn apply_fees(
@@ -82,8 +83,9 @@ impl FeesService for BasicFeesService {
         order: &Order,
         prices: &OraclePrices,
         balance_was_improved: bool,
+        size_delta_usd: Usd,
     ) -> StepFees {
-        let notional_usd: Usd = order.size_delta_usd.abs();
+        let notional_usd = size_delta_usd.abs();
 
         // 1) Position fee bps with optional rebate for helpful trades.
         let mut pos_bps = self.base_position_fee_bps(order.order_type);
@@ -91,7 +93,8 @@ impl FeesService for BasicFeesService {
             // effective_bps = pos_bps * (100 - rebate%) / 100
             pos_bps = pos_bps.saturating_mul(100 - self.helpful_rebate_percent) / 100;
         }
-        
+
+
         let position_fee_usd: Usd = (notional_usd as i128 * pos_bps as i128 / 10_000) as Usd;
 
         // 2) Liquidation fee only for liquidation orders.
@@ -108,6 +111,8 @@ impl FeesService for BasicFeesService {
             (0, 0)
         };
 
+        println!("position_fee_usd {:?}", position_fee_usd);
+        println!("position_fee_tokens {:?}", position_fee_tokens);
         StepFees {
             position_fee_usd,
             position_fee_tokens,

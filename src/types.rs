@@ -53,6 +53,9 @@ pub struct Order {
     pub size_delta_usd: Usd,
     pub withdraw_collateral_amount: TokenAmount,
 
+    /// Target leverage X for this step, e.g. 5 means 5x.
+    pub target_leverage_x: i64,
+
     pub created_at: Timestamp,
     pub valid_from: Timestamp,
     pub valid_until: Timestamp,

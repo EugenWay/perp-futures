@@ -39,6 +39,7 @@ pub fn compute_step_costs<F, B, Fe>(
     prices: &OraclePrices,
     order: &Order,
     balance_was_improved: bool,
+    size_delta_usd: Usd,
 ) -> Result<StepCosts, String>
 where
     F: FundingService,
@@ -59,7 +60,8 @@ where
     };
 
     // 3) Trading fees (position + liquidation).
-    let trading_fees = fees_svc.compute_fees(pos, order, prices, balance_was_improved);
+    let trading_fees =
+        fees_svc.compute_fees(pos, order, prices, balance_was_improved, size_delta_usd);
 
     let funding_usd = funding_step.cost_usd;
     let borrowing_usd = borrowing_step.cost_usd;
