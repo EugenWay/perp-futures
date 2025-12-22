@@ -12,16 +12,23 @@ pub enum PricingError {
         size_delta_usd: Usd,
     },
     ZeroSizeTokensAfterImpact,
+    MathOverflow,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeDirection {
+    Increase,
+    Decrease,
 }
 
-/// Input params for execution price calculation on increase.
-pub struct ExecutionPriceIncreaseParams<'a> {
+pub struct ExecutionPriceParams<'a> {
     /// Long / short OI before and after the action.
     pub oi: &'a OpenInterestParams,
     /// Market config for impact exponents and factors.
     pub impact_cfg: &'a ImpactRebalanceConfig,
     /// Side (long / short).
     pub side: Side,
+    /// Increase or Decrease.
+    pub direction: TradeDirection,
     /// Requested size delta in USD.
     pub size_delta_usd: Usd,
     /// Oracle min / max prices.
@@ -29,7 +36,7 @@ pub struct ExecutionPriceIncreaseParams<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExecutionPriceIncreaseResult {
+pub struct ExecutionPriceResult {
     pub price_impact_usd: Usd,
     pub price_impact_amount_tokens: TokenAmount,
     pub base_size_delta_tokens: TokenAmount,
@@ -40,11 +47,11 @@ pub struct ExecutionPriceIncreaseResult {
 
 /// High-level trait for pricing logic.
 pub trait PricingService {
-    fn get_execution_price_for_increase(
+    fn get_execution_price(
         &self,
         price_impact: &dyn PriceImpactService,
-        params: ExecutionPriceIncreaseParams,
-    ) -> Result<ExecutionPriceIncreaseResult, PricingError>;
+        params: ExecutionPriceParams,
+    ) -> Result<ExecutionPriceResult, PricingError>;
 }
 
 /// Basic implementation that uses a PriceImpactService inside.
@@ -52,15 +59,16 @@ pub trait PricingService {
 pub struct BasicPricingService;
 
 impl PricingService for BasicPricingService {
-    fn get_execution_price_for_increase(
+    fn get_execution_price(
         &self,
         price_impact: &dyn PriceImpactService,
-        params: ExecutionPriceIncreaseParams,
-    ) -> Result<ExecutionPriceIncreaseResult, PricingError> {
-        let ExecutionPriceIncreaseParams {
+        params: ExecutionPriceParams,
+    ) -> Result<ExecutionPriceResult, PricingError> {
+        let ExecutionPriceParams {
             oi,
             impact_cfg,
             side,
+            direction,
             size_delta_usd,
             prices,
         } = params;
@@ -68,12 +76,14 @@ impl PricingService for BasicPricingService {
         // 0) trivial branch: sizeDeltaUsd == 0
         if size_delta_usd == 0 {
             // No impact, just pick index price.
-            let execution_price = match side {
-                Side::Long => prices.index_price_max,
-                Side::Short => prices.index_price_min,
+            let execution_price = match (direction, side) {
+                (TradeDirection::Increase, Side::Long)
+                | (TradeDirection::Decrease, Side::Short) => prices.index_price_max,
+                (TradeDirection::Increase, Side::Short)
+                | (TradeDirection::Decrease, Side::Long) => prices.index_price_min,
             };
 
-            return Ok(ExecutionPriceIncreaseResult {
+            return Ok(ExecutionPriceResult {
                 price_impact_usd: 0,
                 price_impact_amount_tokens: 0,
                 base_size_delta_tokens: 0,
@@ -113,13 +123,10 @@ impl PricingService for BasicPricingService {
 
         // 3) baseSizeDeltaInTokens (without price impact)
         //
-        // For long:
-        //   - use indexPrice.max, round DOWN
-        //
-        // For short:
-        //   - use indexPrice.min, round UP
-        let base_size_delta_tokens: TokenAmount = match side {
-            Side::Long => {
+        // (Increase, Long) | (Decrease, Short): use indexPrice.max, floor
+        // (Increase, Short)| (Decrease, Long) : use indexPrice.min, ceil
+        let base_size_delta_tokens: TokenAmount = match (direction, side) {
+            (TradeDirection::Increase, Side::Long) | (TradeDirection::Decrease, Side::Short) => {
                 let p_max = prices.index_price_max;
                 if p_max > 0 {
                     size_delta_usd / p_max
@@ -127,7 +134,7 @@ impl PricingService for BasicPricingService {
                     return Err(PricingError::ZeroSizeDelta);
                 }
             }
-            Side::Short => {
+            (TradeDirection::Increase, Side::Short) | (TradeDirection::Decrease, Side::Long) => {
                 let p_min = prices.index_price_min;
                 if p_min > 0 {
                     let q = size_delta_usd / p_min;
@@ -139,15 +146,14 @@ impl PricingService for BasicPricingService {
             }
         };
 
-        //  4) total sizeDeltaInTokens including impact ---
-        //
-        //   if long:
-        //      sizeDeltaInTokens = base + priceImpactAmount
-        //   if short:
-        //      sizeDeltaInTokens = base - priceImpactAmount
-        let size_delta_tokens: TokenAmount = match side {
-            Side::Long => base_size_delta_tokens + price_impact_amount_tokens,
-            Side::Short => base_size_delta_tokens - price_impact_amount_tokens,
+        //  4) total sizeDeltaInTokens including impact
+        let size_delta_tokens: TokenAmount = match (direction, side) {
+            (TradeDirection::Increase, Side::Long) | (TradeDirection::Decrease, Side::Short) => {
+                checked_add(base_size_delta_tokens, price_impact_amount_tokens)?
+            }
+            (TradeDirection::Increase, Side::Short) | (TradeDirection::Decrease, Side::Long) => {
+                checked_sub(base_size_delta_tokens, price_impact_amount_tokens)?
+            }
         };
 
         if size_delta_tokens < 0 {
@@ -166,7 +172,7 @@ impl PricingService for BasicPricingService {
         // TODO: acceptablePrice
         let execution_price: Usd = size_delta_usd / size_delta_tokens;
 
-        Ok(ExecutionPriceIncreaseResult {
+        Ok(ExecutionPriceResult {
             price_impact_usd,
             price_impact_amount_tokens,
             base_size_delta_tokens,
@@ -383,4 +389,11 @@ mod tests {
             "Short base tokens must be computed using min price with rounding up (ceil)"
         );
     }
+}
+
+fn checked_add(a: i128, b: i128) -> Result<i128, PricingError> {
+    a.checked_add(b).ok_or(PricingError::MathOverflow)
+}
+fn checked_sub(a: i128, b: i128) -> Result<i128, PricingError> {
+    a.checked_sub(b).ok_or(PricingError::MathOverflow)
 }

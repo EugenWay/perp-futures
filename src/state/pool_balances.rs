@@ -23,6 +23,14 @@ impl PoolBalances {
         }
     }
 
+    pub fn add_to_pool(&mut self, market_id: MarketId, asset: AssetId, amount: TokenAmount) {
+        if amount <= 0 {
+            return;
+        }
+        let entry = self.liquidity.entry((market_id, asset)).or_insert(0);
+        *entry = entry.saturating_add(amount);
+    }
+
     /// Add trading fees to the pool for a specific (market, asset).
     pub fn add_fee_to_pool(&mut self, market_id: MarketId, asset: AssetId, amount: TokenAmount) {
         if amount == 0 {

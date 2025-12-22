@@ -3,10 +3,8 @@ use std::hash::Hash;
 
 pub type Timestamp = u64;
 
-/// Денежные суммы в USD (можно потом сделать fixed-point 1e6)
 pub type Usd = i128;
 
-/// Кол-во токенов (индекс-токенов, коллатераля)
 pub type TokenAmount = i128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -51,6 +49,8 @@ pub struct Order {
     pub order_type: OrderType,
     pub collateral_delta_tokens: TokenAmount,
     pub size_delta_usd: Usd,
+    /// withdraw collateral tokens while partially closing.
+    /// This is independent from size_delta_usd and can increase leverage if not guarded.
     pub withdraw_collateral_amount: TokenAmount,
 
     /// Target leverage X for this step, e.g. 5 means 5x.

@@ -1,7 +1,9 @@
+use crate::math;
 use crate::oracle::Oracle;
+use crate::risk;
 use crate::services::borrowing::apply_borrowing_fees_to_pool;
 use crate::services::price_impact::ImpactRebalanceConfig;
-use crate::services::pricing::ExecutionPriceIncreaseParams;
+use crate::services::pricing::ExecutionPriceParams;
 use crate::services::step_costs::{apply_step_costs_to_position, compute_step_costs};
 use crate::services::*;
 use crate::state::{
@@ -28,7 +30,7 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
     }
 
     pub fn execute_order(&mut self, now: Timestamp, order_id: OrderId) -> Result<(), String> {
-        let order = match self.state.orders.get(order_id) {
+        let mut order = match self.state.orders.get(order_id) {
             Some(o) => o.clone(),
             None => return Err("order_not_found".into()),
         };
@@ -71,9 +73,16 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
                 &order,
                 &prices,
             ),
-            OrderType::Decrease | OrderType::Liquidation => {
-                Err("decrease/liquidation not implemented yet".into())
-            }
+            OrderType::Decrease | OrderType::Liquidation => Self::decrease_position_core(
+                positions,
+                pool_balances,
+                claimables,
+                market,
+                &self.services,
+                now,
+                &mut order,
+                &prices,
+            ),
         };
 
         if result.is_ok() {
@@ -144,13 +153,14 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
         let price_impact_svc = services.price_impact();
 
         let exec = pricing
-            .get_execution_price_for_increase(
+            .get_execution_price(
                 price_impact_svc,
-                ExecutionPriceIncreaseParams {
+                ExecutionPriceParams {
                     oi: &oi_params,
                     impact_cfg: &impact_cfg,
                     side: order.side,
                     size_delta_usd,
+                    direction: pricing::TradeDirection::Increase,
                     prices: *prices,
                 },
             )
@@ -221,6 +231,221 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
         //  - handle referral and UI fees if you add them later.
         Ok(())
     }
+
+    fn decrease_position_core(
+        positions: &mut PositionStore,
+        pool_balances: &mut PoolBalances,
+        claimables: &mut Claimables,
+        market: &mut MarketState,
+        services: &S,
+        now: Timestamp,
+        order: &mut Order,
+        prices: &OraclePrices,
+    ) -> Result<(), String> {
+        let key = PositionKey {
+            account: order.account,
+            market_id: order.market_id,
+            collateral_token: order.collateral_token,
+            side: order.side,
+        };
+
+        let pos: &mut Position = positions
+            .get_mut(&key)
+            .ok_or_else(|| "position_not_found".to_string())?;
+
+        if pos.size_usd <= 0 || pos.size_tokens <= 0 {
+            return Err("position_empty_or_corrupted".into());
+        }
+
+        // Cap order fields to position bounds
+        if order.size_delta_usd > pos.size_usd {
+            order.size_delta_usd = pos.size_usd;
+        }
+        if order.withdraw_collateral_amount > pos.collateral_amount {
+            order.withdraw_collateral_amount = pos.collateral_amount;
+        }
+
+        // Liquidation order must be full-close and withdraw=0 (GMX style)
+        let is_liq = matches!(order.order_type, OrderType::Liquidation);
+        if is_liq {
+            order.size_delta_usd = pos.size_usd;
+            order.withdraw_collateral_amount = 0;
+        }
+
+        // 3) Risk precheck
+        let risk = risk::RiskCfg::default();
+        let (mut size_delta_usd, mut withdraw_tokens, mut is_full_close) =
+            risk::validation::precheck_decrease_and_withdraw(&pos, &order, prices, risk)?;
+
+        // liquidation => full close always
+        if is_liq {
+            size_delta_usd = pos.size_usd;
+            withdraw_tokens = 0;
+            is_full_close = true;
+        }
+
+        // Compute size_delta_tokens for pnl
+        let size_delta_tokens =
+            math::position::size_delta_in_tokens(&pos, size_delta_usd, is_full_close)?;
+
+        // Proportional pending impact removal
+        let prop_pending_impact =
+            math::position::proportional_pending_impact_tokens(&pos, size_delta_usd)?;
+
+        // 6) Pricing call (mainly to obtain balance_was_improved + impact)
+        //    OI params for decrease: current -> next (subtract size_delta_usd)
+        let oi_params = services.open_interest().for_decrease(
+            market.oi_long_usd,
+            market.oi_short_usd,
+            size_delta_usd,
+            order.side,
+        );
+        let impact_cfg = ImpactRebalanceConfig::default_quadratic();
+        let exec = services
+            .pricing()
+            .get_execution_price(
+                services.price_impact(),
+                crate::services::pricing::ExecutionPriceParams {
+                    oi: &oi_params,
+                    impact_cfg: &impact_cfg,
+                    side: order.side,
+                    direction: crate::services::pricing::TradeDirection::Decrease,
+                    size_delta_usd,
+                    prices: *prices,
+                },
+            )
+            .map_err(|e| format!("pricing_error:{:?}", e))?;
+
+        // 7) Fees/funding/borrowing: compute + apply
+        let step_costs = compute_step_costs(
+            services.funding(),
+            services.borrowing(),
+            services.fees(),
+            market,
+            pos,
+            claimables,
+            prices,
+            &order,
+            exec.balance_was_improved,
+            size_delta_usd,
+        )?;
+
+        if let Err(e) = apply_step_costs_to_position(pos, prices, &step_costs) {
+            if is_liq && is_full_close {
+                pos.collateral_amount = 0;
+            } else {
+                return Err(format!("insufficient_collateral_for_costs:{e}"));
+            }
+        }
+
+        // Route fees to pools
+        services
+            .fees()
+            .apply_fees(pool_balances, claimables, &step_costs.trading_fees);
+        apply_borrowing_fees_to_pool(
+            pool_balances,
+            market.id,
+            pos.key.collateral_token,
+            step_costs.borrowing_tokens,
+        );
+
+        // PnL settlement (MVP): realized pnl proportional to tokens closed
+        let total_pnl = math::pnl::total_position_pnl_usd(&pos, prices)?;
+        let realized_pnl =
+            math::pnl::realized_pnl_usd(total_pnl, size_delta_tokens, pos.size_tokens)?;
+
+        // Convert realized pnl usd to collateral token amount (MVP single-asset settlement)
+        let pnl_tokens_signed = math::pnl::pnl_usd_to_collateral_tokens(realized_pnl, prices)?;
+
+        let mut output_tokens: TokenAmount = 0;
+
+        if pnl_tokens_signed > 0 {
+            // profit => user receives tokens (from pool in real protocol)
+            output_tokens = output_tokens
+                .checked_add(pnl_tokens_signed)
+                .ok_or("output_overflow")?;
+        } else if pnl_tokens_signed < 0 {
+            // loss => pay from position collateral
+            let loss = -pnl_tokens_signed;
+            if loss > pos.collateral_amount {
+                if is_liq && is_full_close {
+                    pos.collateral_amount = 0; // insolvent close allowed
+                } else {
+                    return Err("insufficient_collateral_for_negative_pnl".into());
+                }
+            } else {
+                pos.collateral_amount -= loss;
+                // loss paid by the trader => credit to pool (collateral token)
+                pool_balances.add_to_pool(market.id, pos.key.collateral_token, loss);
+            }
+        }
+
+        // Withdraw collateral (after costs/pnl)
+        if withdraw_tokens > 0 {
+            pos.collateral_amount -= withdraw_tokens;
+            output_tokens = output_tokens
+                .checked_add(withdraw_tokens)
+                .ok_or("output_overflow")?;
+        }
+
+        // Update market OI (USD)
+        match order.side {
+            Side::Long => {
+                market.oi_long_usd = market
+                    .oi_long_usd
+                    .checked_sub(size_delta_usd)
+                    .ok_or("oi_long_underflow")?;
+            }
+            Side::Short => {
+                market.oi_short_usd = market
+                    .oi_short_usd
+                    .checked_sub(size_delta_usd)
+                    .ok_or("oi_short_underflow")?;
+            }
+        }
+
+        // Update position core fields
+        if is_full_close || size_delta_usd == pos.size_usd {
+            // if full close, output all remaining collateral
+            output_tokens = output_tokens
+                .checked_add(pos.collateral_amount)
+                .ok_or("output_overflow")?;
+
+            // close and do not reinsert
+            return Ok(());
+        }
+
+        // partial update
+        pos.size_usd = pos
+            .size_usd
+            .checked_sub(size_delta_usd)
+            .ok_or("pos_size_usd_underflow")?;
+        pos.size_tokens = pos
+            .size_tokens
+            .checked_sub(size_delta_tokens)
+            .ok_or("pos_size_tokens_underflow")?;
+
+        // remove proportional pending impact
+        pos.pending_impact_tokens = pos
+            .pending_impact_tokens
+            .checked_sub(prop_pending_impact)
+            .ok_or("pending_impact_underflow")?;
+
+        pos.last_updated_at = now;
+
+        // Postcheck remaining position (leverage/collateral constraints)
+        crate::risk::validation::postcheck_remaining_position(&pos, prices, risk)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DecreaseOutcome {
+    pub output_collateral_tokens: TokenAmount, 
+    pub realized_pnl_usd: Usd,
+    pub size_delta_tokens: TokenAmount,       
+    pub is_full_close: bool,
 }
 
 /// Derive size_delta_usd from collateral deposit and target leverage.
@@ -718,8 +943,7 @@ mod tests {
         // where:
         //   total_cost_usd2 = funding_usd2 + borrowing_usd2 + trading_usd2
         //   total_cost_tokens2 = total_cost_usd2 / collateral_price_min
-        let expected_total_usd2: Usd =
-            expected_borrowing_usd2 + expected_trading_fee_usd2;
+        let expected_total_usd2: Usd = expected_borrowing_usd2 + expected_trading_fee_usd2;
         let expected_total_tokens2: TokenAmount =
             expected_total_usd2 / oracle_prices.collateral_price_min;
 

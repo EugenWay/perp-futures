@@ -20,15 +20,23 @@ pub trait OpenInterestService {
     /// Build OI params for an **increase** of position size.
     ///
     /// Convention (without virtual liquidity):
-    /// - если side == Long:
+    /// - if side == Long:
     ///       next.long = current.long + size_delta_usd
     ///       next.short = current.short
-    /// - если side == Short:
+    /// - if side == Short:
     ///       next.short = current.short + size_delta_usd
     ///       next.long = current.long
     ///
     /// assume size_delta_usd >= 0.
     fn for_increase(
+        &self,
+        current_long_usd: Usd,
+        current_short_usd: Usd,
+        size_delta_usd: Usd,
+        side: Side,
+    ) -> OpenInterestParams;
+
+    fn for_decrease(
         &self,
         current_long_usd: Usd,
         current_short_usd: Usd,
@@ -57,6 +65,40 @@ impl OpenInterestService for BasicOpenInterestService {
         let (next_long, next_short) = match side {
             Side::Long => (current_long_usd + size_delta_usd, current_short_usd),
             Side::Short => (current_long_usd, current_short_usd + size_delta_usd),
+        };
+
+        let next = OpenInterestSnapshot {
+            long_usd: next_long,
+            short_usd: next_short,
+        };
+
+        OpenInterestParams { current, next }
+    }
+
+    fn for_decrease(
+        &self,
+        current_long_usd: Usd,
+        current_short_usd: Usd,
+        size_delta_usd: Usd,
+        side: Side,
+    ) -> OpenInterestParams {
+        let current = OpenInterestSnapshot {
+            long_usd: current_long_usd,
+            short_usd: current_short_usd,
+        };
+        let (next_long, next_short) = match side {
+            Side::Long => (
+                current_long_usd
+                    .checked_sub(size_delta_usd)
+                    .expect("oi_long_underflow"),
+                current_short_usd,
+            ),
+            Side::Short => (
+                current_long_usd,
+                current_short_usd
+                    .checked_sub(size_delta_usd)
+                    .expect("oi_short_underflow"),
+            ),
         };
 
         let next = OpenInterestSnapshot {

@@ -91,9 +91,6 @@ fn from_fp_to_usd_saturating(v_fp: U256) -> Usd {
     i128::from_be_bytes(buf)
 }
 
-/// Core math: Rust analogue of GMX `_getPriceImpactUsd`
-/// (without virtual inventory).
-///
 /// Inputs:
 ///   - oi.current.long_usd / short_usd
 ///   - oi.next.long_usd / short_usd
