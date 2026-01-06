@@ -6,6 +6,7 @@ use crate::risk;
 use crate::services::borrowing::apply_borrowing_fees_to_pool;
 use crate::services::price_impact::ImpactRebalanceConfig;
 use crate::services::pricing::ExecutionPriceParams;
+use crate::risk::{RiskCfg, liquidation, liquidation::{LiquidationFeeCfg, LiquidationPreview}};
 use crate::services::step_costs::{apply_step_costs_to_position, compute_step_costs};
 use crate::services::*;
 use crate::state::{
@@ -94,6 +95,96 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
         }
 
         result
+    }
+
+    pub fn is_liquidatable_by_margin(
+        &self,
+        now: Timestamp,
+        key: PositionKey,
+    ) -> Result<LiquidationPreview, String> {
+        let market = self.state.markets.get(&key.market_id).ok_or("market_not_found")?;
+        let pos = self.state.positions.get(&key).ok_or("position_not_found")?;
+        let prices = self.oracle.validate_and_get_prices(key.market_id)?;
+
+        let price_impact_usd_on_close = self.preview_close_price_impact_usd(market, pos, &prices)?;
+
+        let risk = RiskCfg::default();
+
+        // mvp
+        let fee_cfg = LiquidationFeeCfg {
+            close_position_fee_bps: 0,  
+            liquidation_fee_bps: 0,      
+        };
+
+        liquidation::is_liquidatable_by_margin(
+            market,
+            pos,
+            &prices,
+            now,
+            risk,
+            fee_cfg,
+            price_impact_usd_on_close,
+        )
+    }
+
+    pub fn calculate_liquidation_price(
+        &self,
+        now: Timestamp,
+        key: PositionKey,
+    ) -> Result<U256, String> {
+        let market = self.state.markets.get(&key.market_id).ok_or("market_not_found")?;
+        let pos = self.state.positions.get(&key).ok_or("position_not_found")?;
+        let prices = self.oracle.validate_and_get_prices(key.market_id)?;
+
+        let price_impact_usd_on_close = self.preview_close_price_impact_usd(market, pos, &prices)?;
+
+        let risk = RiskCfg::default();
+
+        // zero liquidation fee for mvp
+        let fee_cfg = LiquidationFeeCfg {
+            close_position_fee_bps: 0,
+            liquidation_fee_bps: 0,
+        };
+
+        liquidation::calculate_liquidation_price(
+            market,
+            pos,
+            &prices,
+            now,
+            risk,
+            fee_cfg,
+            price_impact_usd_on_close,
+        )
+    }
+
+    fn preview_close_price_impact_usd(
+        &self,
+        market: &MarketState,
+        pos: &Position,
+        prices: &OraclePrices,
+    ) -> Result<SignedU256, String> {
+        let oi_params = self.services.open_interest().for_decrease(
+            market.oi_long_usd,
+            market.oi_short_usd,
+            pos.size_usd,
+            pos.key.side,
+        );
+
+        let impact_cfg = ImpactRebalanceConfig::default_quadratic();
+
+        let exec = self.services.pricing().get_execution_price(
+            self.services.price_impact(),
+            crate::services::pricing::ExecutionPriceParams {
+                oi: &oi_params,
+                impact_cfg: &impact_cfg,
+                side: pos.key.side,
+                direction: crate::services::pricing::TradeDirection::Decrease,
+                size_delta_usd: pos.size_usd,
+                prices: *prices,
+            },
+        ).map_err(|e| format!("pricing_error:{:?}", e))?;
+
+        Ok(exec.price_impact_usd)
     }
 
     fn increase_position_core(
@@ -605,7 +696,6 @@ fn impact_tokens_to_usd_conservative(
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use crate::math::{signed_add, signed_sub};
     use crate::oracle::Oracle;
     use crate::services::BasicServicesBundle;
@@ -662,6 +752,13 @@ mod tests {
         }
     }
 
+    fn set_index_price(executor: &mut Executor<BasicServicesBundle, TestOracle>, px: U256) {
+        let mut p = executor.oracle.prices;
+        p.index_price_min = px;
+        p.index_price_max = px;
+        executor.oracle.prices = p;
+    }
+
     fn usd(x: u128) -> U256 {
         U256::from(x) * U256::exp10(30) // USD(1e30)
     }
@@ -670,9 +767,8 @@ mod tests {
         U256::from(x) // token atoms
     }
 
-    fn leverage_x(x: i64) -> U256 {
-        assert!(x > 0);
-        U256::from(x as u64)
+    fn leverage_x(x: u32) -> U256 {
+        U256::from(x)
     }
 
     /// Convert whole tokens to atoms by decimals.
@@ -730,6 +826,175 @@ mod tests {
             mag,
         })
     }
+
+    fn setup_executor(side: Side) -> (Executor<BasicServicesBundle, TestOracle>, PositionKey) {
+        let market_id: MarketId = MarketId(1);
+        let account: AccountId = AccountId([7; 32]);
+
+        let collateral_token: AssetId = AssetId(10);
+        let long_asset: AssetId = AssetId(11);
+        let short_asset: AssetId = AssetId(12);
+
+        // USDC collateral (6), ETH index (18)
+        let collateral_decimals: u8 = 6;
+        let index_decimals: u8 = 18;
+
+        // Index initial: $3000, Collateral: $1
+        let (index_price_min, index_price_max) =
+            normalize_price_per_atom(usd(3_000), usd(3_000), index_decimals);
+
+        let (collateral_price_min, collateral_price_max) =
+            normalize_price_per_atom(usd(1), usd(1), collateral_decimals);
+
+        let prices = OraclePrices {
+            index_price_min,
+            index_price_max,
+            collateral_price_min,
+            collateral_price_max,
+        };
+
+        let oracle = TestOracle { prices };
+        let services = BasicServicesBundle::default();
+
+        let mut executor: Executor<BasicServicesBundle, TestOracle> =
+            Executor::new(State::default(), services, oracle);
+
+        // Ensure market exists + has sane params used by pricing/borrowing/funding
+        let m = executor.state.markets.entry(market_id).or_insert_with(|| {
+            let mut mm = MarketState::default();
+            mm.id = market_id;
+            mm
+        });
+
+        m.long_asset = long_asset;
+        m.short_asset = short_asset;
+        m.liquidity_usd = usd(1_000_000);
+
+        let key = PositionKey {
+            account,
+            market_id,
+            collateral_token,
+            side,
+        };
+
+        (executor, key)
+    }
+
+    fn open_position(
+        executor: &mut Executor<BasicServicesBundle, TestOracle>,
+        t: Timestamp,
+        key: PositionKey,
+        collateral_tokens: u128,
+        collateral_decimals: u8,
+        leverage_x: u32,
+    ) {
+        let deposit_atoms = to_atoms(collateral_tokens, collateral_decimals);
+
+        let order = Order {
+            account: key.account,
+            market_id: key.market_id,
+            side: key.side,
+            collateral_token: key.collateral_token,
+            size_delta_usd: U256::zero(), // derived inside executor
+            collateral_delta_tokens: deposit_atoms,
+            target_leverage_x: leverage_x,
+            order_type: OrderType::Increase,
+            withdraw_collateral_amount: U256::zero(),
+            created_at: t,
+            valid_from: t - 1,
+            valid_until: t + 300,
+        };
+
+        let id: OrderId = executor.submit_order(order);
+        executor.execute_order(t, id).expect("open position must succeed");
+    }
+
+    #[test]
+    fn is_liquidatable_by_margin_long_crosses_threshold() {
+        let (mut executor, key) = setup_executor(Side::Long);
+        let t: Timestamp = 1_000;
+
+        // High leverage
+        // 500 USDC * 20x => ~10k notional
+        let collateral_tokens = 500;
+        let collateral_decimals = 6;
+        let leverage_x = 20;
+        open_position(&mut executor, t, key, collateral_tokens, collateral_decimals, leverage_x);
+
+        let liq_price = executor
+            .calculate_liquidation_price(t, key)
+            .expect("liq price calc must succeed");
+        assert!(liq_price > U256::zero(), "liq_price must be > 0 for this setup");
+        println!("liq_price {:?}", liq_price);
+
+        let margin = (liq_price / U256::from(100u8)) + U256::from(1u8); // ~1% + 1 atom
+        let above = liq_price + margin;
+        set_index_price(&mut executor, above);
+
+        let preview = executor
+            .is_liquidatable_by_margin(t, key)
+            .expect("must return preview");
+        assert!(
+            !preview.is_liquidatable,
+            "long should NOT be liquidatable above threshold; liq_price={liq_price}, px={above}, preview={preview:?}"
+        );
+
+        let below = liq_price.saturating_sub(margin);
+        set_index_price(&mut executor, below);
+
+         let preview = executor
+            .is_liquidatable_by_margin(t, key)
+            .expect("must return preview");
+        assert!(
+            preview.is_liquidatable,
+            "long should be liquidatable below threshold; liq_price={liq_price}, px={below}, preview={preview:?}"
+        );
+    }
+
+    #[test]
+    fn is_liquidatable_by_margin_short_crosses_threshold() {
+        let (mut executor, key) = setup_executor(Side::Short);
+        let t: Timestamp = 2_000;
+
+        // 500 USDC * 20x => ~10k notional
+        let collateral_tokens = 500;
+        let collateral_decimals = 6;
+        let leverage_x = 20;
+        open_position(&mut executor, t, key, collateral_tokens, collateral_decimals, leverage_x);
+
+        let liq_price = executor
+            .calculate_liquidation_price(t, key)
+            .expect("liq price calc must succeed");
+        assert!(liq_price > U256::zero(), "liq_price must be > 0 for this setup");
+
+        let margin = (liq_price / U256::from(100u8)) + U256::from(1u8);
+
+         // Price is below the threshold => short is not liquidated
+        let below = liq_price.saturating_sub(margin);
+        set_index_price(&mut executor, below);
+
+        let preview = executor
+            .is_liquidatable_by_margin(t, key)
+            .expect("must return preview");
+        assert!(
+            !preview.is_liquidatable,
+            "short should NOT be liquidatable below threshold; liq_price={liq_price}, px={below}, preview={preview:?}"
+        );
+
+        // Price is higher the threshold => short is liquidated
+        let above = liq_price + margin;
+        set_index_price(&mut executor, above);
+
+        let preview = executor
+            .is_liquidatable_by_margin(t, key)
+            .expect("must return preview");
+        assert!(
+            preview.is_liquidatable,
+            "short should be liquidatable above threshold; liq_price={liq_price}, px={above}, preview={preview:?}"
+        );
+    }
+
+   
     /// Full workflow test:
     ///
     /// 1) Market starts mildly long-heavy (more longs than shorts).

@@ -10,7 +10,6 @@ pub fn usd_scale() -> U256 {
     U256::exp10(30)
 }
 
-
 /// Protocol-level risk constraints.
 #[derive(Clone, Copy, Debug)]
 pub struct RiskCfg {
@@ -47,7 +46,6 @@ impl RiskCfg {
         )
     }
 
-
     /// Helper constructor: provide human-readable USD thresholds (no scale),
     /// and a max leverage which is converted to a maintenance factor.
     pub fn with_max_leverage_and_thresholds(
@@ -70,7 +68,6 @@ impl RiskCfg {
             factor_scale: scale_fp,
         }
     }
-
 }
 
 impl Default for RiskCfg {

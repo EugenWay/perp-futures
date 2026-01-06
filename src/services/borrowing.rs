@@ -204,7 +204,10 @@ pub fn preview_borrowing_fee_usd(
     let rate_per_sec_fp = base.saturating_add(slope_term);
 
     let delta_index_fp = rate_per_sec_fp.saturating_mul(U256::from(dt));
-    let current_idx = market.borrowing.cumulative_factor.saturating_add(delta_index_fp);
+    let current_idx = market
+        .borrowing
+        .cumulative_factor
+        .saturating_add(delta_index_fp);
 
     if current_idx <= pos.borrowing_index || pos.size_usd.is_zero() {
         return Ok(U256::zero());

@@ -1,4 +1,4 @@
 pub mod config;
-pub mod validation;
 pub mod liquidation;
+pub mod validation;
 pub use config::RiskCfg;

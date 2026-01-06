@@ -1,12 +1,12 @@
-use primitive_types::{U256};
+use primitive_types::U256;
 
-use crate::risk::RiskCfg;
-use crate::state::{MarketState, Position};
-use crate::types::{OraclePrices, Side, SignedU256, Timestamp, Usd};
-use crate::math::rounding::{Rounding, div_round};
 use crate::math;
 use crate::math::pnl;
-use crate::services::{funding, borrowing};
+use crate::math::rounding::{Rounding, div_round};
+use crate::risk::RiskCfg;
+use crate::services::{borrowing, funding};
+use crate::state::{MarketState, Position};
+use crate::types::{OraclePrices, Side, SignedU256, Timestamp, Usd};
 
 /// Fee config for liquidation preview.
 #[derive(Clone, Copy, Debug)]
@@ -24,8 +24,8 @@ pub struct LiquidationPreview {
     pub price_impact_usd: SignedU256, // included as negative-only in equity
     pub borrowing_fee_usd: U256,
     pub funding_fee_usd: SignedU256, // preview delta; included as positive-only cost
-    pub close_fees_usd: U256,         // position + liquidation fees (USD)
-    pub equity_usd: SignedU256,       // final equity (signed)
+    pub close_fees_usd: U256,        // position + liquidation fees (USD)
+    pub equity_usd: SignedU256,      // final equity (signed)
     pub required_usd: U256,
     pub is_liquidatable: bool,
 }
@@ -39,7 +39,6 @@ fn collateral_value_usd(pos: &Position, prices: &OraclePrices) -> Result<U256, S
         .checked_mul(prices.collateral_price_min)
         .ok_or("collateral_value_overflow".into())
 }
-
 
 /// required_usd = max(min_collateral_usd, size_usd * min_collateral_factor_fp / factor_scale)
 pub fn required_collateral_usd(pos: &Position, risk: RiskCfg) -> Result<U256, String> {
@@ -55,7 +54,6 @@ pub fn required_collateral_usd(pos: &Position, risk: RiskCfg) -> Result<U256, St
     Ok(required_by_leverage.max(risk.min_collateral_usd))
 }
 
-
 /// close_fees_usd = size_usd * (close_fee_bps + liq_fee_bps) / 10_000
 fn close_fees_usd(size_usd: U256, fee_cfg: LiquidationFeeCfg) -> U256 {
     let total_bps: U256 = U256::from(fee_cfg.close_position_fee_bps)
@@ -66,21 +64,13 @@ fn close_fees_usd(size_usd: U256, fee_cfg: LiquidationFeeCfg) -> U256 {
 /// For liquidation we typically do NOT allow “helpful” bonuses to save margin.
 /// So: include only negative impact (cost), ignore positive.
 fn negative_only(s: SignedU256) -> SignedU256 {
-    if s.is_negative {
-        s
-    } else {
-        SignedU256::zero()
-    }
+    if s.is_negative { s } else { SignedU256::zero() }
 }
 
 /// For liquidation we typically do NOT allow funding rewards to save margin.
 /// So: include only positive funding cost, ignore rewards.
 fn funding_cost_only(f: SignedU256) -> U256 {
-    if f.is_negative {
-        U256::zero()
-    } else {
-        f.mag
-    }
+    if f.is_negative { U256::zero() } else { f.mag }
 }
 
 /// Main predicate:
@@ -107,7 +97,7 @@ pub fn is_liquidatable_by_margin(
     let funding_fee = funding::preview_funding_fee_usd(market, pos, now)?;
 
     let close_fees = close_fees_usd(pos.size_usd, fee_cfg);
-    
+
     // PnL at conservative mark (min for long, max for short).
     let pnl_usd = pnl::total_position_pnl_usd(pos, prices)?;
 
@@ -209,8 +199,10 @@ pub fn calculate_liquidation_price(
         Side::Long => {
             // numer = entry + R + K - C
             let mut numer = entry
-                .checked_add(r).ok_or("liq_price_overflow")?
-                .checked_add(k).ok_or("liq_price_overflow")?;
+                .checked_add(r)
+                .ok_or("liq_price_overflow")?
+                .checked_add(k)
+                .ok_or("liq_price_overflow")?;
 
             if numer <= c {
                 U256::zero()
@@ -237,16 +229,17 @@ pub fn calculate_liquidation_price(
     Ok(price)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use primitive_types::U256;
-    use crate::types::{OraclePrices, SignedU256};
     use crate::state::{MarketState, Position, PositionKey};
     use crate::types::{AccountId, AssetId, MarketId, Side};
+    use crate::types::{OraclePrices, SignedU256};
+    use primitive_types::U256;
 
-    fn usd(x: u64) -> U256 { U256::from(x) * U256::exp10(30) }
+    fn usd(x: u64) -> U256 {
+        U256::from(x) * U256::exp10(30)
+    }
 
     fn base_pos(side: Side) -> Position {
         Position {
@@ -256,8 +249,8 @@ mod tests {
                 collateral_token: AssetId(10),
                 side,
             },
-            size_usd: usd(200),          // entry notional $200
-            size_tokens: U256::from(2),  // 2 atoms/tokens of index
+            size_usd: usd(200),                // entry notional $200
+            size_tokens: U256::from(2),        // 2 atoms/tokens of index
             collateral_amount: U256::from(50), // 50 collateral tokens/atoms
             pending_impact_tokens: SignedU256::zero(),
             funding_index: SignedU256::zero(),
@@ -300,7 +293,10 @@ mod tests {
         risk.min_collateral_factor_fp = risk.factor_scale / U256::from(10u64);
         risk.min_collateral_usd = usd(5);
 
-        let fee_cfg = LiquidationFeeCfg { close_position_fee_bps: 0, liquidation_fee_bps: 0 };
+        let fee_cfg = LiquidationFeeCfg {
+            close_position_fee_bps: 0,
+            liquidation_fee_bps: 0,
+        };
 
         let p = calculate_liquidation_price(
             &market,
@@ -310,7 +306,8 @@ mod tests {
             risk,
             fee_cfg,
             SignedU256::zero(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(p, usd(85));
     }
@@ -334,7 +331,10 @@ mod tests {
         risk.min_collateral_factor_fp = risk.factor_scale / U256::from(10u64); // 10%
         risk.min_collateral_usd = usd(5);
 
-        let fee_cfg = LiquidationFeeCfg { close_position_fee_bps: 0, liquidation_fee_bps: 0 };
+        let fee_cfg = LiquidationFeeCfg {
+            close_position_fee_bps: 0,
+            liquidation_fee_bps: 0,
+        };
 
         let prev = is_liquidatable_by_margin(
             &market,
@@ -344,7 +344,8 @@ mod tests {
             risk,
             fee_cfg,
             SignedU256::zero(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(prev.is_liquidatable);
         assert!(prev.equity_usd.is_negative);
@@ -368,7 +369,10 @@ mod tests {
         risk.min_collateral_factor_fp = risk.factor_scale / U256::from(10u64);
         risk.min_collateral_usd = usd(5);
 
-        let fee_cfg = LiquidationFeeCfg { close_position_fee_bps: 0, liquidation_fee_bps: 0 };
+        let fee_cfg = LiquidationFeeCfg {
+            close_position_fee_bps: 0,
+            liquidation_fee_bps: 0,
+        };
 
         let prev = is_liquidatable_by_margin(
             &market,
@@ -378,7 +382,8 @@ mod tests {
             risk,
             fee_cfg,
             SignedU256::zero(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!prev.is_liquidatable);
         assert!(!prev.equity_usd.is_negative);

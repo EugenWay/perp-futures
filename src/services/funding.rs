@@ -226,7 +226,8 @@ pub fn preview_funding_fee_usd(
     }
 
     let abs_idx = math::signed_abs(delta_idx);
-    let fee_mag = pos.size_usd
+    let fee_mag = pos
+        .size_usd
         .checked_mul(abs_idx)
         .ok_or("funding_fee_mul_overflow")?
         / funding_index_scale();
