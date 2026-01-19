@@ -35,16 +35,16 @@ impl ImpactRebalanceConfig {
     /// Simple quadratic profile for MVP.
     pub fn default_quadratic() -> Self {
         let one = fp_scale();
-        // Effectively: impact_usd ~ (diff^2) / 1_000_000
+        // GMX-compatible factors (roughly 100x smaller than previous defaults).
         Self {
             impact_exponent: 2,
             // helpful trades: small positive impact
-            same_side_positive_factor_fp: one / 1_000_000, // 1e-6
-            // harmful trades: ~4x stronger, but still soft
-            same_side_negative_factor_fp: one * 4 / 1_000_000,
+            same_side_positive_factor_fp: one / 100_000_000, // 1e-8
+            // harmful trades: ~4.2x stronger, GMX-style
+            same_side_negative_factor_fp: one * 42 / 1_000_000_000, // 4.2e-8
             // crossover: similar scale
-            crossover_positive_factor_fp: one / 1_000_000,
-            crossover_negative_factor_fp: one * 4 / 1_000_000,
+            crossover_positive_factor_fp: one / 100_000_000, // 1e-8
+            crossover_negative_factor_fp: one * 42 / 1_000_000_000, // 4.2e-8
         }
     }
 }
