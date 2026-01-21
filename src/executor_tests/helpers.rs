@@ -5,13 +5,11 @@ use crate::{
     state::{MarketState, PositionKey, State},
     types::{
         AccountId, AssetId, MarketId, OraclePrices, Order, OrderId, OrderType, Side, SignedU256,
-        Timestamp,
+        Timestamp, ExecutionType
     },
 };
 use primitive_types::{U256, U512};
 
-/// USD fixed-point scale used across the project (1e30).
-pub const USD_SCALE: u128 = 1_000_000_000_000_000_000_000_000_000_000; // 1e30
 
 #[allow(dead_code)]
 pub fn usd(x: u128) -> U256 {
@@ -213,7 +211,7 @@ pub fn submit_and_execute(
     now: Timestamp,
     order: Order,
 ) -> OrderId {
-    let id: OrderId = executor.submit_order(order);
+    let id: OrderId = executor.submit_order(order).expect("Error during order submittion");
     executor
         .execute_order(now, id)
         .expect("execute_order must succeed");
@@ -249,6 +247,9 @@ pub fn open_position(
         collateral_delta_tokens: deposit_atoms,
         target_leverage_x: leverage_x,
         order_type: OrderType::Increase,
+        execution_type: ExecutionType::Market, 
+        trigger_price: None,
+        acceptable_price: None,
         withdraw_collateral_amount: U256::zero(),
         created_at: now,
         valid_from: now.saturating_sub(1),
@@ -288,6 +289,9 @@ pub fn close_position_full(
         collateral_delta_tokens: U256::zero(),
         target_leverage_x: 1, // unused for decrease, but required by struct
         order_type: OrderType::Decrease,
+        execution_type: ExecutionType::Market,
+        trigger_price: None,
+        acceptable_price: None,
         withdraw_collateral_amount: U256::zero(),
         created_at: now,
         valid_from: now.saturating_sub(1),
@@ -317,6 +321,9 @@ pub fn close_position_partial_with_withdraw(
         collateral_delta_tokens: U256::zero(),
         target_leverage_x: 1,
         order_type: OrderType::Decrease,
+        execution_type: ExecutionType::Market,
+        trigger_price: None,
+        acceptable_price: None,
         withdraw_collateral_amount: withdraw_tokens,
         created_at: now,
         valid_from: now.saturating_sub(1),

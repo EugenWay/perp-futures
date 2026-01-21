@@ -16,7 +16,8 @@ use crate::state::{
     Claimables, MarketState, PoolBalances, Position, PositionKey, PositionStore, State,
 };
 use crate::types::{
-    AssetId, OraclePrices, Order, OrderId, OrderType, Side, SignedU256, Timestamp, TokenAmount, Usd,
+    AssetId, ExecutionType, OraclePrices, Order, OrderId, OrderType, Side, SignedU256, Timestamp,
+    TokenAmount, Usd, AccountId, MarketId,
 };
 
 #[derive(Clone)]
@@ -34,9 +35,108 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
             oracle,
         }
     }
+    fn validate_order_on_submit(order: &Order) -> Result<(), String> {
+        use ExecutionType as Ex;
+        if order.valid_until <= order.valid_from {
+            return Err("invalid_order_time_window".into());
+        }
+        if order.execution_type == Ex::Market && order.trigger_price.is_some() {
+            return Err("market_order_must_not_have_trigger_price".into());
+        }
+        if matches!(
+            order.execution_type,
+            Ex::Limit | Ex::StopLoss | Ex::TakeProfit
+        ) && order.trigger_price.is_none()
+        {
+            return Err("trigger_price_required".into());
+        }
 
-    pub fn submit_order(&mut self, order: Order) -> OrderId {
-        self.state.orders.create(order)
+        if order.order_type == OrderType::Increase
+            && matches!(order.execution_type, Ex::StopLoss | Ex::TakeProfit)
+        {
+            return Err("stop_loss_take_profit_only_for_decrease".into());
+        }
+
+        if order.order_type == OrderType::Liquidation {
+            if order.execution_type != Ex::Market {
+                return Err("liquidation_must_be_market".into());
+            }
+            if order.trigger_price.is_some() {
+                return Err("liquidation_must_not_have_trigger_price".into());
+            }
+        }
+
+        match order.order_type {
+            OrderType::Increase => {
+                if order.target_leverage_x == 0 {
+                    return Err("target_leverage_must_be_positive".into());
+                }
+            }
+            OrderType::Decrease => {
+                if order.size_delta_usd.is_zero() {
+                    return Err("size_delta_usd_must_be_positive_for_decrease".into());
+                }
+            }
+            OrderType::Liquidation => {}
+        }
+        Ok(())
+    }
+
+    pub fn submit_order(&mut self, order: Order) -> Result<OrderId, String> {
+        Self::validate_order_on_submit(&order)?;
+        Ok(self.state.orders.create(order))
+    }
+
+     pub fn cancel_order(&mut self, caller: AccountId, order_id: OrderId) -> Result<(), String> {
+        let order = self.state.orders.get(order_id).ok_or("order_not_found")?;
+        if order.account != caller {
+            return Err("not_order_owner".into());
+        }
+        self.state.orders.remove(order_id);
+        Ok(())
+    }
+
+    fn check_order_trigger(order: &Order, prices: &OraclePrices) -> Result<(), String> {
+        use ExecutionType as Ex;
+
+        if order.execution_type == Ex::Market {
+            return Ok(());
+        }
+
+        let trigger = order
+            .trigger_price
+            .ok_or_else(|| "trigger_price_required".to_string())?;
+
+        // Liquidation is always executed by liquidation flow (no triggers here)
+        if order.order_type == OrderType::Liquidation {
+            return Ok(());
+        }
+
+        let satisfied = match (order.execution_type, order.order_type, order.side) {
+            // -------------------- LIMIT --------------------
+            (Ex::Limit, OrderType::Increase, Side::Long) => prices.index_price_max <= trigger,
+            (Ex::Limit, OrderType::Increase, Side::Short) => prices.index_price_min >= trigger,
+
+            (Ex::Limit, OrderType::Decrease, Side::Long) => prices.index_price_min >= trigger,
+            (Ex::Limit, OrderType::Decrease, Side::Short) => prices.index_price_max <= trigger,
+
+            // -------------------- STOP LOSS (Decrease only) --------------------
+            (Ex::StopLoss, OrderType::Decrease, Side::Long) => prices.index_price_min <= trigger,
+            (Ex::StopLoss, OrderType::Decrease, Side::Short) => prices.index_price_max >= trigger,
+
+            // -------------------- TAKE PROFIT (Decrease only) --------------------
+            (Ex::TakeProfit, OrderType::Decrease, Side::Long) => prices.index_price_min >= trigger,
+            (Ex::TakeProfit, OrderType::Decrease, Side::Short) => prices.index_price_max <= trigger,
+
+            // Others
+            _ => return Err("unsupported_order_execution_type".into()),
+        };
+
+        if satisfied {
+            Ok(())
+        } else {
+            Err("order_not_triggered".into())
+        }
     }
 
     pub fn execute_order(&mut self, now: Timestamp, order_id: OrderId) -> Result<(), String> {
@@ -44,6 +144,9 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
             Some(o) => o.clone(),
             None => return Err("order_not_found".into()),
         };
+
+        let prices = self.oracle.validate_and_get_prices(order.market_id)?;
+        Self::check_order_trigger(&order, &prices)?;
 
         if now < order.valid_from {
             return Err("order_not_active_yet".into());
@@ -67,7 +170,6 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
             m
         });
 
-        let prices = self.oracle.validate_and_get_prices(order.market_id)?;
         // Sync market-level time-based indices
         self.services.funding().update_indices(market, now);
         self.services.borrowing().update_index(market, now);
@@ -497,7 +599,6 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
                 return Err(format!("insufficient_collateral_for_costs:{e}"));
             }
 
-            println!("COLL AMOUNT {:?}", pos.collateral_amount);
             // Route fees to pool / claimables.
             services
                 .fees()
@@ -664,6 +765,75 @@ impl<S: ServicesBundle, O: Oracle> Executor<S, O> {
         }
 
         Ok(())
+    }
+
+    pub fn claim_all(
+        &mut self,
+        caller: AccountId,
+        asset_id: AssetId,
+    ) -> Result<TokenAmount, String> {
+        self.state.claimables.claim_all(caller, asset_id)
+    }
+
+    // ----------------------------
+    // Read methods 
+    // ----------------------------
+
+    pub fn get_order(&self, order_id: OrderId) -> Option<Order> {
+        self.state.orders.get(order_id).cloned()
+    }
+
+    /// List all pending orders created by account.
+    pub fn get_orders_by_account(&self, account: AccountId) -> Vec<(OrderId, Order)> {
+        self.state.orders
+            .iter()
+            .filter_map(|(id, o)| {
+                if o.account == account {
+                    Some((*id, o.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_position(&self, key: &PositionKey) -> Option<Position> {
+        self.state.positions.get(key).cloned()
+    }
+
+    /// List all positions for account.
+    pub fn get_positions_by_account(&self, account: AccountId) -> Vec<Position> {
+        self.state.positions
+            .iter()
+            .filter_map(|(_k, p)| {
+                if p.key.account == account {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_market(&self, market_id: MarketId) -> Option<MarketState> {
+        self.state.markets.get(&market_id).cloned()
+    }
+
+    pub fn get_claimable(&self, account: AccountId, asset_id: AssetId) -> TokenAmount {
+        self.state.claimables.balance_of(account, asset_id)
+    }
+
+    pub fn list_active_order_ids(&self, now: Timestamp) -> Vec<OrderId> {
+        self.state.orders
+            .iter()
+            .filter_map(|(id, o)| {
+                if now >= o.valid_from && now <= o.valid_until {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 

@@ -78,4 +78,50 @@ impl Claimables {
     pub fn take_fee_all(&mut self, account: AccountId, asset: AssetId) -> TokenAmount {
         self.fees.remove(&(account, asset)).unwrap_or(U256::zero())
     }
+
+    /// Total withdrawable balance for (account, asset):
+    /// funding + fees.
+    pub fn balance_of(&self, account: AccountId, asset: AssetId) -> TokenAmount {
+        self.get_funding(account, asset)
+            .saturating_add(self.get_fee(account, asset))
+    }
+
+    /// Claim *all* claimables (funding + fees) for (account, asset).
+    /// Returns total amount claimed.
+    fn take_all(&mut self, account: AccountId, asset: AssetId) -> TokenAmount {
+        let a = self.take_funding_all(account, asset);
+        let b = self.take_fee_all(account, asset);
+        a.saturating_add(b)
+    }
+    
+    /// Claim all claimables for (account, asset). Errors if balance is zero.
+    pub fn claim_all(&mut self, account: AccountId, asset: AssetId) -> Result<TokenAmount, String> {
+        let total = self.take_all(account, asset);
+        if total.is_zero() {
+            return Err("nothing_to_claim".into());
+        }
+        Ok(total)
+    }
+
+    pub fn list_by_account(&self, account: AccountId) -> Vec<(AssetId, TokenAmount)> {
+
+        let mut acc: HashMap<AssetId, TokenAmount> = HashMap::new();
+
+        for ((a, asset), amount) in self.funding.iter() {
+            if *a == account && !amount.is_zero() {
+                *acc.entry(*asset).or_insert(U256::zero()) =
+                    acc.get(asset).cloned().unwrap_or(U256::zero()).saturating_add(*amount);
+            }
+        }
+
+        for ((a, asset), amount) in self.fees.iter() {
+            if *a == account && !amount.is_zero() {
+                *acc.entry(*asset).or_insert(U256::zero()) =
+                    acc.get(asset).cloned().unwrap_or(U256::zero()).saturating_add(*amount);
+            }
+        }
+
+        acc.into_iter().collect()
+    }
+
 }

@@ -68,6 +68,18 @@ pub enum Side {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionType {
+    /// Executes immediately (no price trigger).
+    Market,
+    /// Executes only if the limit condition is satisfied.
+    Limit,
+    /// Triggered decrease order: protect downside.
+    StopLoss,
+    /// Triggered decrease order: lock profit.
+    TakeProfit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderType {
     Increase,
     Decrease,
@@ -89,8 +101,16 @@ pub struct Order {
     pub collateral_token: AssetId,
     pub side: Side,
     pub order_type: OrderType,
+    pub execution_type: ExecutionType,
     pub collateral_delta_tokens: TokenAmount,
     pub size_delta_usd: Usd,
+    /// Trigger price for Limit/StopLoss/TakeProfit orders.
+    /// For Market orders this must be None.
+    pub trigger_price: Option<Usd>,
+
+    /// Optional slippage guard (highly recommended for Market execution).
+    pub acceptable_price: Option<Usd>,
+
     /// withdraw collateral tokens while partially closing.
     /// This is independent from size_delta_usd and can increase leverage if not guarded.
     pub withdraw_collateral_amount: TokenAmount,
