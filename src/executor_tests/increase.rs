@@ -12,7 +12,7 @@ use crate::services::{BasicServicesBundle, ServicesBundle};
 use crate::state::{MarketState, PositionKey, State};
 use crate::types::{
     AccountId, AssetId, MarketId, OraclePrices, Order, OrderId, OrderType, Side, SignedU256,
-    Timestamp, TokenAmount, Usd,
+    Timestamp, TokenAmount, Usd, ExecutionType
 };
 
 fn borrow_index_scale() -> U256 {
@@ -150,13 +150,16 @@ fn full_increase_flow_with_real_services() {
         collateral_delta_tokens: deposit_usdc_atoms,
         target_leverage_x: 4,
         order_type: OrderType::Increase,
+        execution_type: ExecutionType::Market,
+        trigger_price: None,
+        acceptable_price: None,
         withdraw_collateral_amount: U256::zero(),
         created_at: t1,
         valid_from: t1 - 30,
         valid_until: t1 + 300,
     };
 
-    let order1_id: OrderId = executor.submit_order(order1.clone());
+    let order1_id: OrderId = executor.submit_order(order1.clone()).expect("Error during order type submission");
     executor
         .execute_order(t1, order1_id)
         .expect("step1 execute must succeed");
@@ -238,13 +241,16 @@ fn full_increase_flow_with_real_services() {
         collateral_delta_tokens: collateral_delta_tokens2,
         target_leverage_x: 4,
         order_type: OrderType::Increase,
+        execution_type: ExecutionType::Market,
+        trigger_price: None,
+        acceptable_price: None,
         withdraw_collateral_amount: U256::zero(),
         created_at: t2,
         valid_from: t2 - 30,
         valid_until: t2 + 300,
     };
 
-    let order2_id: OrderId = executor.submit_order(order2.clone());
+    let order2_id: OrderId = executor.submit_order(order2.clone()).expect("Error during order type submission");
 
     let pos_before2 = pos_after1.clone();
     let m_before2 = executor.state.markets.get(&market_id).unwrap().clone();

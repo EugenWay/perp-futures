@@ -11,7 +11,7 @@ use crate::services::price_impact::ImpactRebalanceConfig;
 use crate::services::pricing::PricingService;
 use crate::services::pricing::{self, ExecutionPriceParams};
 use crate::services::step_costs::{apply_step_costs_to_position, compute_step_costs};
-use crate::types::{OraclePrices, Order, OrderType, Side, SignedU256, Timestamp};
+use crate::types::{ExecutionType, OraclePrices, Order, OrderType, Side, SignedU256, Timestamp};
 
 const SECONDS_PER_DAY: u64 = 86_400;
 
@@ -92,7 +92,6 @@ fn impact_tokens_to_usd_conservative_local(
         mag,
     })
 }
-
 
 #[test]
 fn decrease_full_close_long_profit_fees_and_indices() {
@@ -235,6 +234,9 @@ fn decrease_full_close_long_profit_fees_and_indices() {
         collateral_delta_tokens: U256::zero(),
         target_leverage_x: 0,
         order_type: OrderType::Decrease,
+        execution_type: ExecutionType::Market,
+        trigger_price: None,
+        acceptable_price: None,
         withdraw_collateral_amount: U256::zero(),
         created_at: t2,
         valid_from: t2.saturating_sub(1),
@@ -528,6 +530,8 @@ fn decrease_full_close_long_profit_fees_and_indices() {
     );
 
     assert_eq!(pool_paid, expected_pool_paid, "pool payout mismatch");
-    assert_eq!(pool_received, expected_pool_received, "pool receive mismatch");
-
+    assert_eq!(
+        pool_received, expected_pool_received,
+        "pool receive mismatch"
+    );
 }

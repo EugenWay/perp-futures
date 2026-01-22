@@ -23,9 +23,6 @@ pub use open_interest::OpenInterestService;
 pub use price_impact::PriceImpactService;
 pub use pricing::{BasicPricingService, PricingService};
 
-use crate::state::MarketState;
-use crate::state::{Claimables, PoolBalances};
-
 pub trait ServicesBundle {
     type Pricing: PricingService;
     type PriceImpact: PriceImpactService;

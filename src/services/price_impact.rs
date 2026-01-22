@@ -54,21 +54,6 @@ fn abs_diff(a: U256, b: U256) -> U256 {
     if a >= b { a - b } else { b - a }
 }
 
-/// x^exp (small exp like 1,2,3) for U256
-fn pow_u256(mut x: U256, mut exp: u32) -> U256 {
-    if exp == 0 {
-        return U256::one();
-    }
-    let mut result = U256::one();
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = result.saturating_mul(x);
-        }
-        x = x.saturating_mul(x);
-        exp >>= 1;
-    }
-    result
-}
 fn usd_scale() -> U256 {
     U256::exp10(30)
 }

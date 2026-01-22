@@ -2,9 +2,9 @@ use primitive_types::U256;
 
 use crate::services::BorrowingService;
 use crate::services::FundingService;
-use crate::services::borrowing_step::{BorrowingStep, apply_borrowing_step};
+use crate::services::borrowing_step::{apply_borrowing_step};
 use crate::services::fees::{FeesService, StepFees};
-use crate::services::funding_step::{FundingStep, apply_funding_step};
+use crate::services::funding_step::{apply_funding_step};
 use crate::state::{Claimables, MarketState, Position};
 use crate::types::{OraclePrices, Order, TokenAmount, Usd};
 /// Full cost breakdown for a single "step" (one position update).
